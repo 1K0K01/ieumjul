@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>줄바꿈 지옥에서 문단 구출하기 — PDF 텍스트 정리</title>
-<meta name="description" content="PDF에서 복사한 글의 어색한 줄바꿈을 좌표 기반으로 판별해 문단으로 되돌려줍니다. 브라우저 안에서만 처리됩니다." />
+<title>이음줄 — PDF 줄바꿈을 문단으로</title>
+<meta name="description" content="PDF에서 복사한 글의 어색한 줄바꿈을 좌표 기반으로 판별해 문단으로 되돌려주는 도구, 이음줄. 브라우저 안에서만 처리됩니다." />
 <link rel="preconnect" href="https://cdn.jsdelivr.net" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root{
     --cream:#F1E9D8;
@@ -36,10 +36,15 @@
     padding:72px 24px 110px;
   }
 
+  .brand{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    margin-bottom:26px;
+  }
   .crumbs{
     display:flex;
     gap:9px;
-    margin-bottom:22px;
   }
   .crumbs span{
     width:11px;
@@ -50,6 +55,12 @@
   }
   .crumbs span:nth-child(2){ opacity:0.55; }
   .crumbs span:nth-child(3){ opacity:0.25; }
+  .wordmark{
+    font-family:var(--mono);
+    font-weight:700;
+    font-size:0.85rem;
+    letter-spacing:0.02em;
+  }
 
   h1{
     font-weight:900;
@@ -241,7 +252,10 @@
 <body>
 <div class="wrap">
 
-  <div class="crumbs"><span></span><span></span><span></span></div>
+  <div class="brand">
+    <span class="crumbs"><span></span><span></span><span></span></span>
+    <span class="wordmark">이음줄</span>
+  </div>
 
   <h1>복사하자마자 끊기는 그 줄바꿈,<br>다시 문단으로 붙여드립니다</h1>
   <p class="lede">PDF를 긁으면 한 줄마다 엔터가 박혀요. 페이지 번호도 슬쩍 따라오고요. 글자의 좌표와 크기를 읽어서 진짜 문단이 끝나는 자리만 남기고, 나머지 줄바꿈은 전부 이어 붙입니다. 처리는 이 페이지 안에서 끝나요 — 어디에도 보내지 않아요.</p>
@@ -356,7 +370,12 @@
 </div>
 
 <script>
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js';
+// pdf.js CDN이 죽거나 경로가 바뀌어도 이 줄에서 전체 스크립트가 멈추지 않도록 방어
+try {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+} catch (e) {
+  console.error('pdf.js 라이브러리를 불러오지 못했습니다.', e);
+}
 
 const $ = (id) => document.getElementById(id);
 const drop = $('drop'), fileInput = $('fileInput'), pickBtn = $('pickBtn');
@@ -456,13 +475,16 @@ async function extractDoc(file){
     pages.push({
       width: viewport.width,
       height: viewport.height,
-      lines: groupIntoLines(items),
+      lines: groupIntoLines(items, viewport.width),
     });
   }
   return pages;
 }
 
-function groupIntoLines(items){
+// 텍스트를 y좌표로 그룹핑해 줄로 만든 뒤, 한 줄 안에서도 x축 간격이 크게 벌어지면
+// (라벨 칸 | 내용 칸 같은 표/2단 레이아웃) 별도 세그먼트로 쪼개서 라벨이 본문에
+// 뒤섞여 들어가지 않도록 처리한다.
+function groupIntoLines(items, pageWidth){
   const lines = [];
   for (const it of items){
     let line = lines.find(l => Math.abs(l.y - it.y) < Math.max(2.2, it.height * 0.42));
@@ -474,21 +496,54 @@ function groupIntoLines(items){
     line.height = Math.max(line.height, it.height);
   }
   lines.sort((a,b)=> b.y - a.y);
+
   for (const line of lines){
     line.items.sort((a,b)=> a.x - b.x);
-    let text = '';
-    let prevEnd = null;
-    for (const it of line.items){
-      if (prevEnd !== null){
-        const gap = it.x - prevEnd;
-        if (gap > it.height * 0.28) text += ' ';
-      }
-      text += it.str;
-      prevEnd = it.x + it.width;
+    const bigGap = Math.max(line.height * 4.5, (pageWidth || 600) * 0.05);
+
+    // x간격 기준으로 세그먼트 분리
+    const segments = [{ items: [line.items[0]] }];
+    for (let i = 1; i < line.items.length; i++){
+      const prev = line.items[i-1];
+      const it = line.items[i];
+      const gap = it.x - (prev.x + prev.width);
+      if (gap > bigGap) segments.push({ items: [it] });
+      else segments[segments.length - 1].items.push(it);
     }
-    line.text = text.replace(/\s+/g,' ').trim();
-    line.xStart = Math.min(...line.items.map(i=>i.x));
-    line.xEnd = Math.max(...line.items.map(i=>i.x + i.width));
+
+    const built = segments.map(seg => {
+      let text = '', prevEnd = null;
+      for (const it of seg.items){
+        if (prevEnd !== null){
+          const gap = it.x - prevEnd;
+          if (gap > it.height * 0.28) text += ' ';
+        }
+        text += it.str;
+        prevEnd = it.x + it.width;
+      }
+      return {
+        text: text.replace(/\s+/g,' ').trim(),
+        xStart: Math.min(...seg.items.map(i=>i.x)),
+        xEnd: Math.max(...seg.items.map(i=>i.x + i.width)),
+      };
+    }).filter(s => s.text.length > 0);
+
+    if (built.length <= 1){
+      line.text = built[0] ? built[0].text : '';
+      line.xStart = built[0] ? built[0].xStart : line.items[0].x;
+      line.xEnd = built[0] ? built[0].xEnd : line.items[0].x;
+    } else {
+      // 가장 긴 세그먼트를 본문으로 보고, 짧은 세그먼트(표의 라벨 칸 등)는
+      // "[라벨] 본문" 형태로 앞에 붙여 정보 손실 없이 하나의 줄로 합친다.
+      const main = built.reduce((a,b)=> b.text.length > a.text.length ? b : a);
+      const others = built.filter(s => s !== main);
+      const allShort = others.every(s => s.text.length <= 14);
+      line.text = allShort
+        ? `[${others.map(s=>s.text).join(' ')}] ${main.text}`
+        : built.map(s=>s.text).join(' ');
+      line.xStart = main.xStart;
+      line.xEnd = main.xEnd;
+    }
   }
   return lines.filter(l => l.text.length > 0);
 }
@@ -529,12 +584,18 @@ function analyze(pages, rules){
   });
   const repeatThreshold = Math.max(2, Math.ceil(pages.length * 0.5));
 
+  // "44 · The Anointed One" / "사울의 죄 · 43" 처럼 쪽번호와 소제목이
+  // 가운뎃점 등으로 묶인 꼬리말 패턴. 반복 여부와 무관하게 바로 걸러낸다.
+  const footerPattern = /^(?:\d{1,4}\s*[·•\-–—:]\s*.{1,40}|.{1,40}\s*[·•\-–—:]\s*\d{1,4})$/;
+
   function isHeaderFooterLine(l, pg){
     const rel = l.y / pg.height;
     if (rel <= 0.88 && rel >= 0.12) return false;
-    const onlyDigits = /^[0-9\s\-–—.]+$/.test(l.text);
+    const text = l.text.trim();
+    const onlyDigits = /^[0-9\s\-–—.]+$/.test(text);
     if (onlyDigits) return true;
-    const norm = normalizeForRepeat(l.text);
+    if (footerPattern.test(text)) return true;
+    const norm = normalizeForRepeat(text);
     const freq = rel > 0.88 ? topFreq.get(norm) : bottomFreq.get(norm);
     return pages.length >= 2 && freq >= repeatThreshold;
   }
