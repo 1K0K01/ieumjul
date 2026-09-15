@@ -629,7 +629,7 @@ async function extractDoc(file){
     const viewport = page.getViewport({ scale: 1 });
     const textContent = await page.getTextContent();
     const items = textContent.items
-      .filter(it => it.str && it.str.trim().length > 0)
+      .filter(it => !!it.str) // 공백만 있는 항목(" ")도 내용으로 인정 — trim해서 버리면 안 됨
       .map(it => {
         const tx = it.transform;
         return {
@@ -802,6 +802,20 @@ function analyze(pages, rules){
   return allLines;
 }
 
+// 한글 조사·어미는 정해진 목록이 있는 닫힌 집합이라 코드로 판별 가능하다.
+// 줄바꿈 때문에 조사/어미 하나만 뚝 떨어져서 다음 줄 맨 앞에 오는 경우
+// (예: "재앙" 줄바꿈 "이 잇따른다" → "재앙이"), 무조건 앞 단어에 붙여쓴다.
+// 목록은 DaleSeo/korean-skills(grammar-checker 스킬 참조자료)의 띄어쓰기 규칙과
+// 대조해 검증함 — "만큼"·"보다"는 그 문서의 의존명사 규칙상 앞말과 띄어 쓰는
+// 용법이 흔해 오판 위험이 커서 제외했다 (예: "먹을 만큼", "이것보다").
+const TRAILING_PARTICLES = new Set([
+  '이','가','은','는','을','를','의','에','와','과','도','만','로','으로','께서',
+  '이나','나','이란','란','이며','며','이자','이라도','라도','마저','조차',
+  '밖에','처럼','부터','까지','에서','에게','한테','께','라고','이라고',
+  '다','요','니다','습니다','는다','ㄴ다','했다','한다','된다','였다','었다','았다',
+  '고','서','며','지만','는데','인데','거나','든지','다가','면서'
+]);
+
 function buildOutput(allLines, rules){
   const bodyWidths = allLines.filter(l=>l.type==='body').map(l=>l.xEnd - l.xStart);
   const typicalWidth = percentile(bodyWidths, 0.7) || 1;
@@ -823,9 +837,12 @@ function buildOutput(allLines, rules){
       buf = line.text;
     } else {
       let sep = ' ';
+      const leadingHangul = (line.text.match(/^[가-힣]+/) || [''])[0];
       if (rules.mergeHyphen && /[A-Za-z]-$/.test(buf)){
         buf = buf.slice(0, -1);
         sep = '';
+      } else if (isHangul(buf.slice(-1)) && TRAILING_PARTICLES.has(leadingHangul)){
+        sep = ''; // 조사/어미 — 앞 단어에 바로 붙인다
       } else if (isHangul(buf.slice(-1)) || isHangul(line.text[0])){
         sep = rules.koreanLineSpace ? ' ' : '';
       }
