@@ -790,25 +790,24 @@ function groupIntoLines(items, pageWidth){
     }
 
     const built = segments.map(seg => {
-      // 1차: 원본 문자열을 그대로 이어붙인다 (PDF가 공백을 str 안에 포함해서
-      // 주는 경우가 많다 — KP-Briefing과 동일한 방식)
-      let text = seg.items.map(i => i.str).join('');
-      // 2차 안전장치: 그런데도 공백이 하나도 없이 여러 아이템이 통째로 붙어
-      // 있다면(원본이 공백을 안 주는 PDF), 아이템 사이 간격을 보고 공백을
-      // 되살린다. 공백이 이미 있으면 이 블록은 건드리지 않는다.
-      if (!/\s/.test(text) && seg.items.length > 2){
-        const charWidths = seg.items
-          .filter(i => i.str.trim().length > 0)
-          .map(i => i.width / Math.max(1, i.str.length));
-        const cw = median(charWidths) || line.height * 0.9;
-        const spaceThreshold = Math.max(cw * 0.6, line.height * 0.2);
-        let rebuilt = '', prevEnd = null;
-        for (const i of seg.items){
-          if (prevEnd !== null && (i.x - prevEnd) > spaceThreshold) rebuilt += ' ';
-          rebuilt += i.str;
-          prevEnd = i.x + i.width;
+      // 이음매마다 개별적으로 판단한다: 이미 공백 문자가 있으면 그대로 믿고,
+      // 없는 이음매만 간격을 본다. (예전엔 "줄 전체에 공백이 하나도 없을 때만"
+      // 안전장치가 작동해서, 줄 대부분은 정상 공백이 있는데 한두 군데만
+      // 공백이 빠진 경우—"한마디"+"아멘"처럼—를 못 잡는 문제가 있었다)
+      let text = '', prevEnd = null, prevItem = null;
+      for (const it of seg.items){
+        if (prevEnd !== null && !/\s$/.test(text) && !/^\s/.test(it.str)){
+          const gap = it.x - prevEnd;
+          // 이 문서에서 실제로 관찰된 값 기준: 정상 공백이 있는 이음매는 간격이
+          // 거의 0에 가깝고(공백 글자 자체가 그 폭을 차지), 공백이 빠진 이음매는
+          // 그보다 뚜렷이 벌어져 있었다(1.95pt). 글자 폭이 아니라 줄 높이 기준의
+          // 작은 절대값으로 판단하는 게 이 패턴엔 더 안정적이었다.
+          const threshold = Math.max(line.height * 0.12, 1.0);
+          if (gap > threshold) text += ' ';
         }
-        text = rebuilt;
+        text += it.str;
+        prevEnd = it.x + it.width;
+        prevItem = it;
       }
       text = text.replace(/\s+/g,' ').trim();
       return {
@@ -991,6 +990,18 @@ function buildOutput(allLines, rules){
     }
     const width = line.xEnd - line.xStart;
     const endsPunct = /[.!?…"'”’)\]。！？：:；;]\s*$/.test(line.text);
+    const next = allLines[idx + 1];
+    const nextLeadingHangul = next ? (next.text.match(/^[가-힣]+/) || [''])[0] : '';
+    // 다음 줄이 조사/어미로 시작한다면(예: "임명합" 다음 줄 "니다.") 폭이
+    // 짧아 보여도 문단을 끊지 않는다 — 이어붙이기 전에 먼저 끊어버리면
+    // 조사 판정 로직까지 아예 못 가서 소용없어진다.
+    const nextIsTrailingParticle = next && next.type === 'body'
+      && isHangul(line.text.slice(-1)) && TRAILING_PARTICLES.has(nextLeadingHangul);
+    // 국어사전 기능이 켜져 있으면 그걸로도 한 번 더 확인 — "대성" 다음 줄
+    // "당으로"처럼 조사 목록엔 없는 임의의 단어 중간 줄바꿈도 잡아야 하니까.
+    const nextJoinsByDict = !nextIsTrailingParticle && next && next.type === 'body'
+      && rules.koreanDict && isHangul(line.text.slice(-1)) && isHangul(next.text[0])
+      && kiwiShouldJoin(line.text.slice(-12), next.text.slice(0, 12)) === true;
 
     let short;
     if (paraMaxWidth > 0){
@@ -1001,11 +1012,11 @@ function buildOutput(allLines, rules){
       // 오판하지 않는다. 여백 라벨 옆처럼 페이지 전체보다 좁은 단(段)이 있어도
       // 문단이 잘게 안 쪼개지게 하기 위함. 다음 줄이 확 넓어지면(=독립된 짧은
       // 제목/라벨) 페이지 전체 평균 폭 기준으로 짧다고 판단한다.
-      const next = allLines[idx + 1];
       const nextWidth = next ? (next.xEnd - next.xStart) : 0;
       const looksLikeNarrowColumn = next && next.type === 'body' && nextWidth > 0 && Math.abs(nextWidth - width) < width * 0.35;
       short = !looksLikeNarrowColumn && width < typicalWidth * 0.82;
     }
+    if (nextIsTrailingParticle || nextJoinsByDict) short = false;
     paraMaxWidth = Math.max(paraMaxWidth, width);
     if (endsPunct || short) flush();
   }
