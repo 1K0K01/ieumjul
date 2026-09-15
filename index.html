@@ -526,7 +526,7 @@ try{
         <span class="dot"></span>
         <div class="rule-text">
           <label for="r-dict">국어사전으로 단어 경계 확인</label>
-          <p>형태소 분석으로 "대성 당" 같은 단어 중간 줄바꿈까지 정확히 이어붙여요. 처음 켤 때 사전 파일(약 84MB)을 내려받아서 시간이 좀 걸려요 — 그 뒤로는 빨라요</p>
+          <p>형태소 분석으로 "대성 당" 같은 단어 중간 줄바꿈까지 정확히 이어붙여요. 저장소에 kiwi-model.tgz를 같이 올려야 작동해요 (README 참고) — 처음 켤 때 그 파일(약 84MB)을 받느라 시간이 좀 걸려요</p>
         </div>
         <span class="switch">
           <input type="checkbox" id="r-dict">
@@ -584,7 +584,7 @@ function currentRules(){
 const KIWI_VERSION = '0.23.0';
 const KIWI_WASM_URL = `https://cdn.jsdelivr.net/npm/kiwi-nlp@${KIWI_VERSION}/dist/kiwi-wasm.wasm`;
 const KIWI_JS_URL = `https://cdn.jsdelivr.net/npm/kiwi-nlp@${KIWI_VERSION}/dist/index.js`;
-const KIWI_MODEL_URL = `https://github.com/bab2min/Kiwi/releases/download/v${KIWI_VERSION}/kiwi_model_v${KIWI_VERSION}_base.tgz`;
+const KIWI_MODEL_URL = './kiwi-model.tgz'; // 같은 저장소에 직접 올린 파일 — 다운로드 방법은 README 참고
 let kiwiInstance = null;
 let kiwiLoadPromise = null;
 
@@ -620,8 +620,13 @@ async function ensureKiwiLoaded(){
   if (kiwiLoadPromise) return kiwiLoadPromise;
   kiwiLoadPromise = (async () => {
     setStatus('국어사전 내려받는 중... (최초 1회, 약 84MB — 시간이 좀 걸려요)');
-    const tgzRes = await fetch(KIWI_MODEL_URL);
-    if (!tgzRes.ok) throw new Error('사전 파일을 받지 못했습니다 (' + tgzRes.status + ')');
+    let tgzRes;
+    try{
+      tgzRes = await fetch(KIWI_MODEL_URL);
+    }catch(e){
+      throw new Error('kiwi-model.tgz를 같은 저장소에 올렸는지 확인해주세요 (README 참고)');
+    }
+    if (!tgzRes.ok) throw new Error('kiwi-model.tgz 파일을 찾을 수 없습니다 (' + tgzRes.status + ') — README의 안내대로 저장소에 올려주세요');
     const tgzBytes = new Uint8Array(await tgzRes.arrayBuffer());
     setStatus('국어사전 압축 푸는 중...');
     const tarBytes = await gunzip(tgzBytes);
