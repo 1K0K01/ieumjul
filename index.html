@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>줄바꿈 지옥에서 문단 구출하기 — PDF 텍스트 정리</title>
+<meta name="description" content="PDF에서 복사한 글의 어색한 줄바꿈을 좌표 기반으로 판별해 문단으로 되돌려줍니다. 브라우저 안에서만 처리됩니다." />
+<link rel="preconnect" href="https://cdn.jsdelivr.net" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+<style>
+  :root{
+    --cream:#F1E9D8;
+    --card:#FFFBF1;
+    --ink:#141414;
+    --shadow-c:#141414;
+    --off:6px;
+    --mono:'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --sans:'Pretendard', -apple-system, BlinkMacSystemFont, 'Malgun Gothic', sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--cream);
+    color:var(--ink);
+    font-family:var(--sans);
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{
+    max-width:740px;
+    margin:0 auto;
+    padding:72px 24px 110px;
+  }
+
+  .crumbs{
+    display:flex;
+    gap:9px;
+    margin-bottom:22px;
+  }
+  .crumbs span{
+    width:11px;
+    height:11px;
+    border-radius:50%;
+    background:var(--ink);
+    display:block;
+  }
+  .crumbs span:nth-child(2){ opacity:0.55; }
+  .crumbs span:nth-child(3){ opacity:0.25; }
+
+  h1{
+    font-weight:900;
+    font-size:clamp(2.1rem, 6vw, 3.3rem);
+    letter-spacing:-0.02em;
+    line-height:1.16;
+    margin:0 0 24px;
+  }
+  .lede{
+    font-size:1.05rem;
+    color:var(--ink);
+    max-width:56ch;
+    margin:0;
+    opacity:0.75;
+  }
+
+  .rule-thick{
+    border:none;
+    border-top:4px solid var(--ink);
+    margin:48px 0;
+  }
+
+  /* ---------- hero diff example ---------- */
+  .diff-raw{
+    font-family:var(--mono);
+    font-size:0.85rem;
+    color:var(--ink);
+    background:var(--card);
+    border:2.5px solid var(--ink);
+    box-shadow:var(--off) var(--off) 0 var(--shadow-c);
+    padding:18px 20px;
+    margin:0 0 28px;
+  }
+  .diff-raw p{ margin:0; padding:2px 0; white-space:pre-wrap; }
+  .ln{ display:inline-block; width:2.1em; opacity:0.35; user-select:none; }
+  .mark.del{ text-decoration:line-through; text-decoration-thickness:2px; opacity:0.5; margin-left:1px; }
+  .diff-arrow{
+    text-align:center;
+    font-weight:900;
+    font-size:1.1rem;
+    margin:0 0 28px;
+  }
+  .diff-clean{
+    font-size:1.02rem;
+    text-align:justify;
+    margin:0;
+    padding:18px 20px;
+    background:var(--card);
+    border:2.5px solid var(--ink);
+    box-shadow:var(--off) var(--off) 0 var(--shadow-c);
+  }
+  .mark.join{ font-weight:900; padding:0 1px; }
+
+  /* ---------- dropzone ---------- */
+  .drop{
+    position:relative;
+    background:var(--card);
+    border:2.5px solid var(--ink);
+    box-shadow:var(--off) var(--off) 0 var(--shadow-c);
+    padding:60px 24px;
+    text-align:center;
+    transition:background .12s ease, color .12s ease;
+  }
+  .drop.drag{ background:var(--ink); color:var(--cream); }
+  .drop .headline{ font-weight:800; font-size:1.15rem; margin:0 0 8px; }
+  .drop .sub{ font-size:0.9rem; margin:0 0 26px; opacity:0.6; }
+  .drop.drag .sub{ opacity:0.75; }
+  .drop input[type=file]{ display:none; }
+
+  .btn{
+    appearance:none;
+    border:2.5px solid var(--ink);
+    border-radius:0;
+    padding:12px 26px;
+    font-size:0.95rem;
+    font-weight:800;
+    font-family:var(--sans);
+    cursor:pointer;
+    box-shadow:4px 4px 0 var(--shadow-c);
+    transition:transform .08s ease, box-shadow .08s ease;
+  }
+  .btn:active{ transform:translate(4px,4px); box-shadow:0 0 0 var(--shadow-c); }
+  .btn-dark{ background:var(--ink); color:var(--cream); }
+  .drop.drag .btn-dark{ background:var(--cream); color:var(--ink); }
+  .btn-outline{ background:var(--card); color:var(--ink); }
+  .btn:disabled{ opacity:0.4; cursor:not-allowed; transform:none; }
+
+  .status{
+    margin-top:16px;
+    font-family:var(--mono);
+    font-size:0.82rem;
+    font-weight:500;
+  }
+  .status.err{ font-weight:700; text-decoration:underline wavy; }
+
+  /* ---------- rules list ---------- */
+  .panel{ margin-top:8px; }
+  .panel-head{
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    padding-bottom:16px;
+    cursor:pointer;
+    user-select:none;
+  }
+  .panel-head h2{ font-size:1.1rem; font-weight:900; margin:0; }
+  .panel-head .toggle{ font-family:var(--mono); font-size:0.8rem; font-weight:700; }
+  .rules{ margin:0; }
+  .rules.collapsed{ display:none; }
+  .rule{
+    display:flex;
+    align-items:flex-start;
+    gap:16px;
+    padding:18px 0;
+    border-top:2px solid var(--ink);
+  }
+  .rule:last-child{ border-bottom:2px solid var(--ink); }
+  .rule .dot{
+    width:9px;
+    height:9px;
+    border-radius:50%;
+    background:var(--ink);
+    margin-top:8px;
+    flex-shrink:0;
+  }
+  .switch{
+    position:relative;
+    flex-shrink:0;
+    width:44px;
+    height:24px;
+    margin-top:1px;
+    order:2;
+    margin-left:auto;
+  }
+  .switch input{
+    position:absolute;
+    opacity:0;
+    width:100%;
+    height:100%;
+    margin:0;
+    cursor:pointer;
+  }
+  .switch .track{
+    position:absolute;
+    inset:0;
+    background:var(--card);
+    border:2px solid var(--ink);
+  }
+  .switch .thumb{
+    position:absolute;
+    top:2px;
+    left:2px;
+    width:16px;
+    height:16px;
+    background:var(--ink);
+    transition:transform .12s ease;
+  }
+  .switch input:checked ~ .track{ background:var(--ink); }
+  .switch input:checked ~ .thumb{ background:var(--card); transform:translateX(20px); }
+  .rule-text{ flex:1; }
+  .rule-text label{ font-weight:700; font-size:0.96rem; display:block; cursor:pointer; }
+  .rule-text p{ margin:4px 0 0; font-size:0.85rem; opacity:0.6; line-height:1.5; }
+
+  /* ---------- output ---------- */
+  .output{ margin-top:24px; }
+  .output-bar{ display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+  textarea{
+    width:100%;
+    min-height:420px;
+    resize:vertical;
+    border:2.5px solid var(--ink);
+    box-shadow:var(--off) var(--off) 0 var(--shadow-c);
+    padding:20px 22px;
+    font-family:var(--sans);
+    font-size:0.95rem;
+    line-height:1.75;
+    background:var(--card);
+    color:var(--ink);
+  }
+  .hidden{ display:none; }
+  footer{
+    margin-top:64px;
+    font-family:var(--mono);
+    font-size:0.78rem;
+    opacity:0.55;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="crumbs"><span></span><span></span><span></span></div>
+
+  <h1>복사하자마자 끊기는 그 줄바꿈,<br>다시 문단으로 붙여드립니다</h1>
+  <p class="lede">PDF를 긁으면 한 줄마다 엔터가 박혀요. 페이지 번호도 슬쩍 따라오고요. 글자의 좌표와 크기를 읽어서 진짜 문단이 끝나는 자리만 남기고, 나머지 줄바꿈은 전부 이어 붙입니다. 처리는 이 페이지 안에서 끝나요 — 어디에도 보내지 않아요.</p>
+
+  <hr class="rule-thick">
+
+  <div class="diff-raw">
+    <p><span class="ln">01</span>공정으로서의 정의는 원초적<span class="mark del">↵</span></p>
+    <p><span class="ln">02</span>입장에서 합의된 원칙을 따른다.<span class="mark del">↵</span></p>
+    <p><span class="ln">03</span>이때 당사자들은 무지의 베일<span class="mark del">↵</span></p>
+    <p><span class="ln">04</span>뒤에서 선택한다.</p>
+  </div>
+  <p class="diff-arrow">↓</p>
+  <p class="diff-clean">공정으로서의 정의는 원초적<span class="mark join">‿</span>입장에서 합의된 원칙을 따른다. 이때 당사자들은 무지의 베일<span class="mark join">‿</span>뒤에서 선택한다.</p>
+
+  <hr class="rule-thick">
+
+  <div class="drop" id="drop">
+    <p class="headline">여기에 PDF를 끌어다 놓으세요</p>
+    <p class="sub">여러 개면 순서대로 이어서 처리해요. 업로드는 하지 않아요.</p>
+    <button class="btn btn-dark" id="pickBtn" type="button">PDF 선택</button>
+    <input type="file" id="fileInput" accept="application/pdf" multiple />
+  </div>
+
+  <p class="status" id="status"></p>
+
+  <div class="panel">
+    <div class="panel-head" id="rulesHead">
+      <h2>다듬는 방식</h2>
+      <span class="toggle" id="rulesToggle">접기</span>
+    </div>
+    <div class="rules" id="rules">
+      <div class="rule">
+        <span class="dot"></span>
+        <div class="rule-text">
+          <label for="r-headerFooter">반복되는 머리말·꼬리말·쪽번호 지우기</label>
+          <p>매 페이지 비슷한 자리에 똑같이 뜨는 줄을 찾아서 지워요</p>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="r-headerFooter" checked>
+          <span class="track"></span><span class="thumb"></span>
+        </span>
+      </div>
+      <div class="rule">
+        <span class="dot"></span>
+        <div class="rule-text">
+          <label for="r-hyphen">잘린 영어 단어 다시 붙이기</label>
+          <p>줄 끝 exam- 과 다음 줄 ple 을 example 로 합쳐요</p>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="r-hyphen" checked>
+          <span class="track"></span><span class="thumb"></span>
+        </span>
+      </div>
+      <div class="rule">
+        <span class="dot"></span>
+        <div class="rule-text">
+          <label for="r-title">큰 글씨는 제목으로</label>
+          <p>마크다운 #을 붙여요. 꺼두면 제목 자리만 따로 줄을 띄워요</p>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="r-title" checked>
+          <span class="track"></span><span class="thumb"></span>
+        </span>
+      </div>
+      <div class="rule">
+        <span class="dot"></span>
+        <div class="rule-text">
+          <label for="r-small">각주·캡션처럼 작은 글씨 빼기</label>
+          <p>본문보다 눈에 띄게 작은 줄은 통째로 버려요</p>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="r-small">
+          <span class="track"></span><span class="thumb"></span>
+        </span>
+      </div>
+      <div class="rule">
+        <span class="dot"></span>
+        <div class="rule-text">
+          <label for="r-korean">한글 줄 이을 때 띄어쓰기 넣기</label>
+          <p>보통은 어절 단위로 줄이 바뀌어요. 단어가 붙어서 나오면 꺼두세요</p>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="r-korean" checked>
+          <span class="track"></span><span class="thumb"></span>
+        </span>
+      </div>
+      <div class="rule">
+        <span class="dot"></span>
+        <div class="rule-text">
+          <label for="r-blank">문단 사이 한 줄 띄우기</label>
+          <p>꺼두면 문단도 그냥 줄바꿈만 해요</p>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="r-blank" checked>
+          <span class="track"></span><span class="thumb"></span>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="output hidden" id="outputSection">
+    <div class="output-bar">
+      <button class="btn btn-dark" id="copyBtn" type="button">복사</button>
+      <button class="btn btn-outline" id="downloadBtn" type="button">다운로드</button>
+      <button class="btn btn-outline" id="resetBtn" type="button">초기화</button>
+    </div>
+    <textarea id="result" readonly spellcheck="false"></textarea>
+  </div>
+
+  <footer>이 브라우저 안에서만 처리돼요. 새로고침하면 다 사라져요.</footer>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js';
+
+const $ = (id) => document.getElementById(id);
+const drop = $('drop'), fileInput = $('fileInput'), pickBtn = $('pickBtn');
+const statusEl = $('status');
+const outputSection = $('outputSection');
+const resultBox = $('result');
+
+let cachedPages = null; // raw extracted pages, independent of rules
+
+/* ---------- rule state ---------- */
+function currentRules(){
+  return {
+    removeHeaderFooter: $('r-headerFooter').checked,
+    mergeHyphen: $('r-hyphen').checked,
+    titleToMarkdown: $('r-title').checked,
+    removeSmallText: $('r-small').checked,
+    koreanLineSpace: $('r-korean').checked,
+    blankLineBetweenParagraphs: $('r-blank').checked,
+  };
+}
+['r-headerFooter','r-hyphen','r-title','r-small','r-korean','r-blank'].forEach(id=>{
+  $(id).addEventListener('change', refresh);
+});
+
+/* ---------- rules panel collapse ---------- */
+$('rulesHead').addEventListener('click', ()=>{
+  const rules = $('rules');
+  const collapsed = rules.classList.toggle('collapsed');
+  $('rulesToggle').textContent = collapsed ? '펼치기' : '접기';
+});
+
+/* ---------- file intake ---------- */
+pickBtn.addEventListener('click', ()=> fileInput.click());
+fileInput.addEventListener('change', (e)=> handleFiles(e.target.files));
+
+['dragenter','dragover'].forEach(evt=>{
+  drop.addEventListener(evt, (e)=>{ e.preventDefault(); drop.classList.add('drag'); });
+});
+['dragleave','drop'].forEach(evt=>{
+  drop.addEventListener(evt, (e)=>{ e.preventDefault(); drop.classList.remove('drag'); });
+});
+drop.addEventListener('drop', (e)=>{
+  if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+});
+
+async function handleFiles(fileList){
+  const files = Array.from(fileList).filter(f=>f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+  if (!files.length){
+    setStatus('PDF 파일만 지원합니다.', true);
+    return;
+  }
+  setStatus(`처리 중... (0/${files.length})`);
+  outputSection.classList.add('hidden');
+  try{
+    const allPages = [];
+    for (let i=0;i<files.length;i++){
+      const pages = await extractDoc(files[i]);
+      allPages.push(...pages);
+      setStatus(`처리 중... (${i+1}/${files.length})`);
+    }
+    cachedPages = allPages;
+    setStatus(`${files.length}개 파일, 총 ${allPages.length}페이지 처리 완료`);
+    outputSection.classList.remove('hidden');
+    refresh();
+  }catch(err){
+    console.error(err);
+    setStatus('처리 중 문제가 발생했습니다: ' + err.message, true);
+  }
+}
+
+function setStatus(msg, isErr){
+  statusEl.textContent = msg;
+  statusEl.classList.toggle('err', !!isErr);
+}
+
+/* ---------- PDF extraction ---------- */
+async function extractDoc(file){
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const pages = [];
+  for (let p=1; p<=pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const viewport = page.getViewport({ scale: 1 });
+    const textContent = await page.getTextContent();
+    const items = textContent.items
+      .filter(it => it.str && it.str.trim().length > 0)
+      .map(it => {
+        const tx = it.transform;
+        return {
+          str: it.str,
+          x: tx[4],
+          y: tx[5],
+          height: it.height || Math.abs(tx[3]) || 10,
+          width: it.width || (it.str.length * (it.height || 10) * 0.5),
+        };
+      });
+    pages.push({
+      width: viewport.width,
+      height: viewport.height,
+      lines: groupIntoLines(items),
+    });
+  }
+  return pages;
+}
+
+function groupIntoLines(items){
+  const lines = [];
+  for (const it of items){
+    let line = lines.find(l => Math.abs(l.y - it.y) < Math.max(2.2, it.height * 0.42));
+    if (!line){
+      line = { y: it.y, height: it.height, items: [] };
+      lines.push(line);
+    }
+    line.items.push(it);
+    line.height = Math.max(line.height, it.height);
+  }
+  lines.sort((a,b)=> b.y - a.y);
+  for (const line of lines){
+    line.items.sort((a,b)=> a.x - b.x);
+    let text = '';
+    let prevEnd = null;
+    for (const it of line.items){
+      if (prevEnd !== null){
+        const gap = it.x - prevEnd;
+        if (gap > it.height * 0.28) text += ' ';
+      }
+      text += it.str;
+      prevEnd = it.x + it.width;
+    }
+    line.text = text.replace(/\s+/g,' ').trim();
+    line.xStart = Math.min(...line.items.map(i=>i.x));
+    line.xEnd = Math.max(...line.items.map(i=>i.x + i.width));
+  }
+  return lines.filter(l => l.text.length > 0);
+}
+
+/* ---------- analysis (cheap, re-run on every rule toggle) ---------- */
+function median(nums){
+  if (!nums.length) return 0;
+  const s = nums.slice().sort((a,b)=>a-b);
+  const mid = Math.floor(s.length/2);
+  return s.length % 2 ? s[mid] : (s[mid-1]+s[mid])/2;
+}
+function percentile(nums, p){
+  if (!nums.length) return 0;
+  const s = nums.slice().sort((a,b)=>a-b);
+  const idx = Math.min(s.length-1, Math.floor(p * s.length));
+  return s[idx];
+}
+function normalizeForRepeat(text){
+  return text.replace(/[0-9]+/g,'#').replace(/\s+/g,' ').trim().toLowerCase();
+}
+function isHangul(ch){
+  return !!ch && /[\uAC00-\uD7A3]/.test(ch);
+}
+
+function analyze(pages, rules){
+  const heights = [];
+  pages.forEach(pg => pg.lines.forEach(l => heights.push(l.height)));
+  const bodyHeight = median(heights) || 10;
+
+  const topFreq = new Map(), bottomFreq = new Map();
+  pages.forEach(pg => {
+    pg.lines.forEach(l => {
+      const rel = l.y / pg.height;
+      const norm = normalizeForRepeat(l.text);
+      if (rel > 0.88) topFreq.set(norm, (topFreq.get(norm)||0)+1);
+      else if (rel < 0.12) bottomFreq.set(norm, (bottomFreq.get(norm)||0)+1);
+    });
+  });
+  const repeatThreshold = Math.max(2, Math.ceil(pages.length * 0.5));
+
+  function isHeaderFooterLine(l, pg){
+    const rel = l.y / pg.height;
+    if (rel <= 0.88 && rel >= 0.12) return false;
+    const onlyDigits = /^[0-9\s\-–—.]+$/.test(l.text);
+    if (onlyDigits) return true;
+    const norm = normalizeForRepeat(l.text);
+    const freq = rel > 0.88 ? topFreq.get(norm) : bottomFreq.get(norm);
+    return pages.length >= 2 && freq >= repeatThreshold;
+  }
+
+  const allLines = [];
+  pages.forEach(pg => {
+    pg.lines.forEach(l => {
+      if (rules.removeHeaderFooter && isHeaderFooterLine(l, pg)) return;
+      let type = 'body';
+      if (l.height > bodyHeight * 1.15) type = 'heading';
+      else if (l.height < bodyHeight * 0.85) type = 'small';
+      if (type === 'small'){
+        if (rules.removeSmallText) return;
+        type = 'body';
+      }
+      if (type === 'heading' && !rules.titleToMarkdown) type = 'heading-plain';
+      allLines.push({ text: l.text, xStart: l.xStart, xEnd: l.xEnd, type });
+    });
+  });
+  return allLines;
+}
+
+function buildOutput(allLines, rules){
+  const bodyWidths = allLines.filter(l=>l.type==='body').map(l=>l.xEnd - l.xStart);
+  const typicalWidth = percentile(bodyWidths, 0.7) || 1;
+  const blocks = [];
+  let buf = '';
+
+  function flush(){
+    if (buf.trim()) blocks.push({ type:'p', text: buf.trim() });
+    buf = '';
+  }
+
+  for (const line of allLines){
+    if (line.type === 'heading' || line.type === 'heading-plain'){
+      flush();
+      blocks.push({ type: line.type === 'heading' ? 'h' : 'p', text: line.text });
+      continue;
+    }
+    if (!buf){
+      buf = line.text;
+    } else {
+      let sep = ' ';
+      if (rules.mergeHyphen && /[A-Za-z]-$/.test(buf)){
+        buf = buf.slice(0, -1);
+        sep = '';
+      } else if (isHangul(buf.slice(-1)) || isHangul(line.text[0])){
+        sep = rules.koreanLineSpace ? ' ' : '';
+      }
+      buf += sep + line.text;
+    }
+    const width = line.xEnd - line.xStart;
+    const endsPunct = /[.!?…"'”’)\]。！？：:；;]\s*$/.test(line.text);
+    const short = width < typicalWidth * 0.82;
+    if (endsPunct || short) flush();
+  }
+  flush();
+
+  const sep = rules.blankLineBetweenParagraphs ? '\n\n' : '\n';
+  return blocks.map(b => b.type === 'h' ? '# ' + b.text : b.text).join(sep);
+}
+
+function refresh(){
+  if (!cachedPages) return;
+  const rules = currentRules();
+  const allLines = analyze(cachedPages, rules);
+  resultBox.value = buildOutput(allLines, rules);
+}
+
+/* ---------- output actions ---------- */
+$('copyBtn').addEventListener('click', async ()=>{
+  try{
+    await navigator.clipboard.writeText(resultBox.value);
+    setStatus('클립보드에 복사했습니다.');
+  }catch(err){
+    resultBox.select();
+    document.execCommand('copy');
+    setStatus('클립보드에 복사했습니다.');
+  }
+});
+
+$('downloadBtn').addEventListener('click', ()=>{
+  const blob = new Blob([resultBox.value], { type:'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '정리된_텍스트.md';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+$('resetBtn').addEventListener('click', ()=>{
+  cachedPages = null;
+  resultBox.value = '';
+  outputSection.classList.add('hidden');
+  fileInput.value = '';
+  setStatus('');
+});
+</script>
+</body>
+</html>
