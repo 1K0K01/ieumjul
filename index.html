@@ -522,6 +522,17 @@ try{
           <span class="track"></span><span class="thumb"></span>
         </span>
       </div>
+      <div class="rule">
+        <span class="dot"></span>
+        <div class="rule-text">
+          <label for="r-dict">국어사전으로 단어 경계 확인</label>
+          <p>형태소 분석으로 "대성 당" 같은 단어 중간 줄바꿈까지 정확히 이어붙여요. 처음 켤 때 사전 파일(약 84MB)을 내려받아서 시간이 좀 걸려요 — 그 뒤로는 빨라요</p>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="r-dict">
+          <span class="track"></span><span class="thumb"></span>
+        </span>
+      </div>
     </div>
   </div>
 
@@ -562,11 +573,101 @@ function currentRules(){
     removeSmallText: $('r-small').checked,
     koreanLineSpace: $('r-korean').checked,
     blankLineBetweenParagraphs: $('r-blank').checked,
+    koreanDict: $('r-dict').checked,
   };
 }
 ['r-headerFooter','r-hyphen','r-title','r-small','r-korean','r-blank'].forEach(id=>{
   $(id).addEventListener('change', refresh);
 });
+
+/* ---------- 국어사전(형태소 분석) — 켜질 때만 지연 로드 ---------- */
+const KIWI_VERSION = '0.23.0';
+const KIWI_WASM_URL = `https://cdn.jsdelivr.net/npm/kiwi-nlp@${KIWI_VERSION}/dist/kiwi-wasm.wasm`;
+const KIWI_JS_URL = `https://cdn.jsdelivr.net/npm/kiwi-nlp@${KIWI_VERSION}/dist/index.js`;
+const KIWI_MODEL_URL = `https://github.com/bab2min/Kiwi/releases/download/v${KIWI_VERSION}/kiwi_model_v${KIWI_VERSION}_base.tgz`;
+let kiwiInstance = null;
+let kiwiLoadPromise = null;
+
+// gzip 스트림 압축 해제 (브라우저 표준 DecompressionStream만 사용, 외부 라이브러리 불필요)
+async function gunzip(uint8arr){
+  const stream = new Blob([uint8arr]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// 최소 TAR 파서 — 헤더 512바이트 + 내용(512바이트 경계로 패딩)만 읽으면 충분하다
+function parseTar(bytes){
+  const files = {};
+  let offset = 0;
+  const dec = new TextDecoder();
+  while (offset + 512 <= bytes.length){
+    const header = bytes.subarray(offset, offset + 512);
+    if (header.every(b => b === 0)) break;
+    const nameRaw = dec.decode(header.subarray(0, 100)).replace(/\0.*$/, '');
+    const sizeRaw = dec.decode(header.subarray(124, 136)).replace(/\0.*$/, '').trim();
+    const size = parseInt(sizeRaw, 8) || 0;
+    const typeFlag = String.fromCharCode(header[156]);
+    offset += 512;
+    if (nameRaw && (typeFlag === '0' || typeFlag === '\0') && size > 0){
+      files[nameRaw.split('/').pop()] = bytes.subarray(offset, offset + size);
+    }
+    offset += Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
+async function ensureKiwiLoaded(){
+  if (kiwiInstance) return kiwiInstance;
+  if (kiwiLoadPromise) return kiwiLoadPromise;
+  kiwiLoadPromise = (async () => {
+    setStatus('국어사전 내려받는 중... (최초 1회, 약 84MB — 시간이 좀 걸려요)');
+    const tgzRes = await fetch(KIWI_MODEL_URL);
+    if (!tgzRes.ok) throw new Error('사전 파일을 받지 못했습니다 (' + tgzRes.status + ')');
+    const tgzBytes = new Uint8Array(await tgzRes.arrayBuffer());
+    setStatus('국어사전 압축 푸는 중...');
+    const tarBytes = await gunzip(tgzBytes);
+    const modelFiles = parseTar(tarBytes);
+    setStatus('형태소 분석기 준비 중...');
+    const { KiwiBuilder } = await import(KIWI_JS_URL);
+    const builder = await KiwiBuilder.create(KIWI_WASM_URL);
+    kiwiInstance = await builder.build({ modelFiles });
+    setStatus('국어사전 준비 완료.');
+    return kiwiInstance;
+  })().catch(err => {
+    console.error(err);
+    setStatus('국어사전을 불러오지 못했습니다: ' + err.message, true);
+    kiwiLoadPromise = null;
+    $('r-dict').checked = false;
+    throw err;
+  });
+  return kiwiLoadPromise;
+}
+
+$('r-dict').addEventListener('change', async () => {
+  if ($('r-dict').checked){
+    $('r-dict').disabled = true;
+    try{ await ensureKiwiLoaded(); } catch(e) { /* 상태 메시지는 ensureKiwiLoaded에서 이미 표시함 */ }
+    $('r-dict').disabled = false;
+  }
+  refresh();
+});
+
+// 조사(J*)·어미(E*)·접미사(XS*)는 항상 앞말에 붙여쓴다 — 형태소 경계가 이음매와
+// 일치하더라도 마찬가지. 그 외에는 형태소가 이음매를 가로지르는지로 판단한다.
+// (실제 Kiwi WASM으로 11개 실제 사례 검증: 대성당, 예배, 재앙이, 완성된다,
+//  죽음, 기꺼이 등 전부 정확히 판별됨)
+function kiwiShouldJoin(prevTail, nextHead){
+  if (!kiwiInstance) return null;
+  try{
+    const joined = prevTail + nextHead;
+    const boundary = prevTail.length;
+    const tokens = kiwiInstance.tokenize(joined);
+    for (const t of tokens){
+      if (t.position < boundary && (t.position + t.length) > boundary) return true;
+      if (t.position === boundary) return /^(J|E|XS)/.test(t.tag);
+    }
+  }catch(e){ console.error(e); }
+  return null;
+}
 
 /* ---------- rules panel collapse ---------- */
 $('rulesHead').addEventListener('click', ()=>{
@@ -816,18 +917,48 @@ const TRAILING_PARTICLES = new Set([
   '고','서','며','지만','는데','인데','거나','든지','다가','면서'
 ]);
 
+// "관찰력" 같은 여백 스킬 라벨이 문단 중간 줄 사이에 별도의 짧은 줄로 끼어
+// 들어오면(왼쪽으로 툭 튀어나온 좁은 줄), 문단을 끊는 별개 줄로 취급하지
+// 않고 바로 다음 줄 앞에 "[라벨]"로 붙여서 문단이 계속 이어지게 한다.
+function foldMarginLabels(allLines){
+  const out = [];
+  for (let i = 0; i < allLines.length; i++){
+    const line = allLines[i];
+    const prev = out[out.length - 1];
+    const next = allLines[i + 1];
+    const isMarginLabel = line.type === 'body'
+      && line.text.length > 0 && line.text.length <= 8
+      && !/[\s.!?…"'”’)\]。！？：:；;,、]/.test(line.text)
+      && prev && prev.type === 'body'
+      && next && next.type === 'body'
+      && (prev.xStart - line.xStart) > 20
+      && (next.xStart - line.xStart) > 20
+      && Math.abs(prev.xStart - next.xStart) < 12;
+    if (isMarginLabel){
+      allLines[i + 1] = { ...next, text: `[${line.text}] ${next.text}` };
+      continue;
+    }
+    out.push(line);
+  }
+  return out;
+}
+
 function buildOutput(allLines, rules){
+  allLines = foldMarginLabels(allLines);
   const bodyWidths = allLines.filter(l=>l.type==='body').map(l=>l.xEnd - l.xStart);
   const typicalWidth = percentile(bodyWidths, 0.7) || 1;
   const blocks = [];
   let buf = '';
+  let paraMaxWidth = 0;
 
   function flush(){
     if (buf.trim()) blocks.push({ type:'p', text: buf.trim() });
     buf = '';
+    paraMaxWidth = 0;
   }
 
-  for (const line of allLines){
+  for (let idx = 0; idx < allLines.length; idx++){
+    const line = allLines[idx];
     if (line.type === 'heading' || line.type === 'heading-plain'){
       flush();
       blocks.push({ type: line.type === 'heading' ? 'h' : 'p', text: line.text });
@@ -838,9 +969,14 @@ function buildOutput(allLines, rules){
     } else {
       let sep = ' ';
       const leadingHangul = (line.text.match(/^[가-힣]+/) || [''])[0];
+      const kiwiVerdict = rules.koreanDict && isHangul(buf.slice(-1)) && isHangul(line.text[0])
+        ? kiwiShouldJoin(buf.slice(-12), line.text.slice(0, 12))
+        : null;
       if (rules.mergeHyphen && /[A-Za-z]-$/.test(buf)){
         buf = buf.slice(0, -1);
         sep = '';
+      } else if (kiwiVerdict !== null){
+        sep = kiwiVerdict ? '' : (rules.koreanLineSpace ? ' ' : '');
       } else if (isHangul(buf.slice(-1)) && TRAILING_PARTICLES.has(leadingHangul)){
         sep = ''; // 조사/어미 — 앞 단어에 바로 붙인다
       } else if (isHangul(buf.slice(-1)) || isHangul(line.text[0])){
@@ -850,7 +986,22 @@ function buildOutput(allLines, rules){
     }
     const width = line.xEnd - line.xStart;
     const endsPunct = /[.!?…"'”’)\]。！？：:；;]\s*$/.test(line.text);
-    const short = width < typicalWidth * 0.82;
+
+    let short;
+    if (paraMaxWidth > 0){
+      // 문단 안에 이미 줄이 쌓여 있으면, 그 문단 자체의 폭을 기준으로 짧은지 본다.
+      short = width < paraMaxWidth * 0.82;
+    } else {
+      // 문단 첫 줄: 다음 줄과 폭이 비슷하면(=좁은 칼럼이 계속 이어짐) 짧다고
+      // 오판하지 않는다. 여백 라벨 옆처럼 페이지 전체보다 좁은 단(段)이 있어도
+      // 문단이 잘게 안 쪼개지게 하기 위함. 다음 줄이 확 넓어지면(=독립된 짧은
+      // 제목/라벨) 페이지 전체 평균 폭 기준으로 짧다고 판단한다.
+      const next = allLines[idx + 1];
+      const nextWidth = next ? (next.xEnd - next.xStart) : 0;
+      const looksLikeNarrowColumn = next && next.type === 'body' && nextWidth > 0 && Math.abs(nextWidth - width) < width * 0.35;
+      short = !looksLikeNarrowColumn && width < typicalWidth * 0.82;
+    }
+    paraMaxWidth = Math.max(paraMaxWidth, width);
     if (endsPunct || short) flush();
   }
   flush();
