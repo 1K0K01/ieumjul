@@ -652,28 +652,28 @@ async function extractDoc(file){
 // 텍스트를 y좌표로 그룹핑해 줄로 만든 뒤, 한 줄 안에서도 x축 간격이 크게 벌어지면
 // (라벨 칸 | 내용 칸 같은 표/2단 레이아웃) 별도 세그먼트로 쪼개서 라벨이 본문에
 // 뒤섞여 들어가지 않도록 처리한다.
-// KP-Briefing(같은 계열 도구)과 비교해서 찾은 원인 수정:
-// PDF는 단어 사이 공백을 it.str 안에 이미 문자로 포함해서 준다. 간격을 계산해
-// 공백을 다시 판단하려던 예전 로직이 오히려 이 내장 공백을 망가뜨리고 있었다.
-// 이제는 pdf.js가 준 원본 순서와 문자열을 그대로 신뢰하고, x축 간격은 표의
-// 라벨 칸처럼 "아주 크게" 벌어진 경우를 구분하는 용도로만 쓴다.
+// KP-Briefing 비교로 찾은 교훈은 유지하되(공백은 원본 문자열을 우선 신뢰),
+// 지난 수정에서 x좌표 정렬 코드를 실수로 같이 지워서 같은 줄 안 글자 순서가
+// 뒤섞이는 더 심각한 버그가 생겼었다. 정렬을 복원하고, 원본에 공백이 아예
+// 없어 통째로 붙어버리는 줄에는 간격 기반 공백 삽입을 안전장치로 되살린다.
 function groupIntoLines(items, pageWidth){
   const lines = [];
-  let curLine = null;
   for (const it of items){
-    if (!curLine || Math.abs(curLine.y - it.y) > Math.max(2.2, it.height * 0.5)){
-      curLine = { y: it.y, height: it.height, items: [] };
-      lines.push(curLine);
+    let line = lines.find(l => Math.abs(l.y - it.y) < Math.max(2.2, it.height * 0.42));
+    if (!line){
+      line = { y: it.y, height: it.height, items: [] };
+      lines.push(line);
     }
-    curLine.items.push(it);
-    curLine.height = Math.max(curLine.height, it.height);
+    line.items.push(it);
+    line.height = Math.max(line.height, it.height);
   }
   lines.sort((a,b)=> b.y - a.y);
 
   for (const line of lines){
+    line.items.sort((a,b)=> a.x - b.x); // 읽는 순서 보장 — 반드시 필요
     const bigGap = Math.max(line.height * 4.5, (pageWidth || 600) * 0.05);
 
-    // 원본 순서를 유지한 채, x간격이 "표 컬럼" 수준으로 큰 경우에만 세그먼트 분리
+    // x간격이 "표 컬럼" 수준으로 큰 경우에만 세그먼트 분리
     const segments = [{ items: [line.items[0]] }];
     for (let i = 1; i < line.items.length; i++){
       const prev = line.items[i-1];
@@ -684,7 +684,27 @@ function groupIntoLines(items, pageWidth){
     }
 
     const built = segments.map(seg => {
-      const text = seg.items.map(i => i.str).join('').replace(/\s+/g,' ').trim();
+      // 1차: 원본 문자열을 그대로 이어붙인다 (PDF가 공백을 str 안에 포함해서
+      // 주는 경우가 많다 — KP-Briefing과 동일한 방식)
+      let text = seg.items.map(i => i.str).join('');
+      // 2차 안전장치: 그런데도 공백이 하나도 없이 여러 아이템이 통째로 붙어
+      // 있다면(원본이 공백을 안 주는 PDF), 아이템 사이 간격을 보고 공백을
+      // 되살린다. 공백이 이미 있으면 이 블록은 건드리지 않는다.
+      if (!/\s/.test(text) && seg.items.length > 2){
+        const charWidths = seg.items
+          .filter(i => i.str.trim().length > 0)
+          .map(i => i.width / Math.max(1, i.str.length));
+        const cw = median(charWidths) || line.height * 0.9;
+        const spaceThreshold = Math.max(cw * 0.6, line.height * 0.2);
+        let rebuilt = '', prevEnd = null;
+        for (const i of seg.items){
+          if (prevEnd !== null && (i.x - prevEnd) > spaceThreshold) rebuilt += ' ';
+          rebuilt += i.str;
+          prevEnd = i.x + i.width;
+        }
+        text = rebuilt;
+      }
+      text = text.replace(/\s+/g,' ').trim();
       return {
         text,
         xStart: Math.min(...seg.items.map(i=>i.x)),
