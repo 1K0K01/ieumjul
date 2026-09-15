@@ -31,16 +31,6 @@ PDF를 드래그해서 텍스트를 복사하면 한 줄마다 줄바꿈이 박�
 
 테마마다 실제 로드되는 폰트 굵기에 맞춰 `--weight-bold`/`--weight-label`/`--weight-body` 토큰을 따로 두고 있어요. 굵어야 하는 자리에 그 폰트에 없는 굵기를 요청하면 브라우저가 비슷한 굵기로 조용히 대체해버려서 의도한 만큼 안 굵어 보일 수 있는데, 그걸 막기 위한 장치예요.
 
-## GitHub Pages에 올리는 방법
-
-1. GitHub에서 새 저장소를 만듭니다 (예: `ieumjul`).
-2. 이 폴더의 `index.html`을 저장소 루트에 올리고 커밋합니다.
-   - 웹에서: 저장소 페이지 → **Add file → Upload files** → `index.html` 드래그 후 Commit
-   - 로컬에서: `git add index.html && git commit -m "add ieumjul" && git push`
-3. 저장소 **Settings → Pages**로 이동합니다.
-4. **Source**를 `Deploy from a branch`로, 브랜치는 `main` (또는 기본 브랜치), 폴더는 `/ (root)`로 설정하고 저장합니다.
-5. 1~2분 뒤 `https://<사용자명>.github.io/ieumjul/` 주소로 접속하면 바로 사용할 수 있습니다.
-
 ## 참고
 
 - PDF 파싱은 CDN의 [pdf.js](https://mozilla.github.io/pdf.js/)를 사용합니다. 오프라인 환경에서는 동작하지 않습니다.
